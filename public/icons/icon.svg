@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title>Promptograph</title>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f6ecdd" />
+      <stop offset="100%" stop-color="#d56b43" />
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="64" fill="url(#bg)" />
+  <circle cx="128" cy="128" r="70" fill="#1d2f31" opacity="0.92" />
+  <circle cx="128" cy="128" r="38" fill="#f6ecdd" />
+  <rect x="60" y="52" width="136" height="30" rx="15" fill="#1d2f31" />
+  <path d="M76 182c21-19 40-29 52-29 10 0 25 7 45 20l7 5-11 18-7-4c-16-10-27-15-34-15-8 0-22 8-40 24z" fill="#f6ecdd"/>
+</svg>
