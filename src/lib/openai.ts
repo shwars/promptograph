@@ -1,7 +1,8 @@
-import type { ImageSize, PromptDraft } from '../types';
+import type { ImageSize, PhotoSettings, PromptDraft } from '../types';
 
 const OPENAI_API_URL = 'https://api.openai.com/v1';
 const ANALYSIS_MODEL = 'gpt-4.1-mini';
+const REWRITE_MODEL = 'gpt-4.1-mini';
 const IMAGE_MODEL = 'gpt-image-1.5';
 
 const EMPTY_DRAFT: PromptDraft = {
@@ -69,7 +70,6 @@ async function openAiFetch<T>(path: string, apiKey: string, body: unknown): Prom
   });
 
   const json = await response.json();
-
   if (!response.ok) {
     throw new Error(extractErrorMessage(json, `OpenAI request failed with ${response.status}.`));
   }
@@ -81,7 +81,7 @@ function extractOutputText(response: unknown): string {
   if (response && typeof response === 'object') {
     const directText = (response as { output_text?: string }).output_text;
     if (typeof directText === 'string' && directText.trim()) {
-      return directText;
+      return directText.trim();
     }
 
     const output = (response as { output?: unknown[] }).output;
@@ -114,7 +114,7 @@ function extractOutputText(response: unknown): string {
     }
   }
 
-  throw new Error('OpenAI analysis response did not include prompt text.');
+  throw new Error('OpenAI response did not include text output.');
 }
 
 function sanitizeText(value: string): string {
@@ -216,6 +216,40 @@ export async function analyzePhoto(apiKey: string, imageDataUrl: string): Promis
   }
 
   return draft;
+}
+
+export async function rewritePromptWithPhotoSettings(
+  apiKey: string,
+  promptText: string,
+  photoSettings: PhotoSettings,
+): Promise<string> {
+  const payload = {
+    model: REWRITE_MODEL,
+    input: [
+      {
+        role: 'system',
+        content: [
+          {
+            type: 'input_text',
+            text:
+              'You rewrite image generation prompts. Keep the scene, subject, and semantic content intact, but adjust the photographic language to reflect the requested lighting, focal length, exposure, and shooting mode. Return only the rewritten prompt text, with no markdown and no commentary.',
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: `Current prompt:\n${promptText}\n\nRequested photo settings:\n${JSON.stringify(photoSettings, null, 2)}`,
+          },
+        ],
+      },
+    ],
+  };
+
+  const response = await openAiFetch<unknown>('/responses', apiKey, payload);
+  return extractOutputText(response);
 }
 
 type ImagesApiResponse = {
