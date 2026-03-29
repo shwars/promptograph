@@ -1,10 +1,12 @@
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
+import JSZip from 'jszip';
 import { analyzePhoto, renderImage, rewritePromptWithPhotoSettings } from './lib/openai';
-import { loadHistoryRecords, loadStoredApiKey, saveHistoryRecord, saveStoredApiKey } from './lib/storage';
+import { clearHistoryRecords, loadHistoryRecords, loadStoredApiKey, saveHistoryRecord, saveStoredApiKey } from './lib/storage';
 import type { CaptureOrientation, HistoryRecord, ImageSize, PhotoSettings } from './types';
 
-type Screen = 'camera' | 'review' | 'generated' | 'history' | 'settings';
+type Screen = 'camera' | 'review' | 'generated' | 'history' | 'historyDetail' | 'settings';
 type Overlay = 'apiKey' | 'promptEdit' | 'photoSettings' | null;
+type HistoryImageView = 'original' | 'final';
 type IconName =
   | 'gallery'
   | 'history'
@@ -19,7 +21,12 @@ type IconName =
   | 'trash'
   | 'camera'
   | 'back'
-  | 'retry';
+  | 'retry'
+  | 'archive'
+  | 'key'
+  | 'image'
+  | 'spark'
+  | 'quote';
 
 const LIGHT_OPTIONS: Array<PhotoSettings['light']> = ['studio', 'sharp', 'soft', 'ambient', 'back light'];
 const FOCAL_LENGTH_OPTIONS: Array<PhotoSettings['focalLength']> = ['24mm', '35mm', '50mm', '85mm'];
@@ -85,14 +92,38 @@ function downloadDataUrl(dataUrl: string, fileName: string): void {
   anchor.click();
 }
 
-async function shareImageDataUrl(dataUrl: string, fileName: string): Promise<void> {
+function getDataUrlExtension(dataUrl: string): string {
+  const mimeMatch = dataUrl.match(/^data:(.*?);base64,/);
+  const mimeType = mimeMatch?.[1] ?? 'application/octet-stream';
+
+  switch (mimeType) {
+    case 'image/jpeg':
+      return 'jpg';
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    default:
+      return 'bin';
+  }
+}
+
+function downloadBlob(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function shareBlobFile(blob: Blob, fileName: string): Promise<void> {
   const navigatorWithShare = navigator as Navigator & {
     canShare?: (data?: ShareData) => boolean;
   };
 
   if (typeof navigatorWithShare.share === 'function') {
-    const blob = dataUrlToBlob(dataUrl);
-    const file = new File([blob], fileName, { type: blob.type || 'image/jpeg' });
+    const file = new File([blob], fileName, { type: blob.type || 'application/octet-stream' });
     const shareData: ShareData = { files: [file], title: fileName };
 
     if (!navigatorWithShare.canShare || navigatorWithShare.canShare(shareData)) {
@@ -107,7 +138,11 @@ async function shareImageDataUrl(dataUrl: string, fileName: string): Promise<voi
     }
   }
 
-  downloadDataUrl(dataUrl, fileName);
+  downloadBlob(blob, fileName);
+}
+
+async function shareImageDataUrl(dataUrl: string, fileName: string): Promise<void> {
+  await shareBlobFile(dataUrlToBlob(dataUrl), fileName);
 }
 
 function Icon({ name }: { name: IconName }) {
@@ -219,6 +254,43 @@ function Icon({ name }: { name: IconName }) {
           <path d="M4 4v4h4" />
         </svg>
       );
+    case 'archive':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 6h16v3H4z" />
+          <path d="M6 9v9h12V9" />
+          <path d="M10 13h4" />
+        </svg>
+      );
+    case 'key':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14.5 8.5A3.5 3.5 0 1 0 14.5 15.5A3.5 3.5 0 1 0 14.5 8.5Z" />
+          <path d="M11.5 12H4v3h3v2h3v-2h1.5" />
+        </svg>
+      );
+    case 'image':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 6h16v12H4z" />
+          <path d="M7 15l3-3 2.5 2.5L15.5 11 19 15" />
+          <path d="M9 10.2a1.2 1.2 0 1 0 0 .01" />
+        </svg>
+      );
+    case 'spark':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 4l1.2 3.5L17 8.7l-3.8 1.3L12 13.5 10.8 10 7 8.7l3.8-1.2z" />
+          <path d="M18 14l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z" />
+        </svg>
+      );
+    case 'quote':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M8 10H5.5A2.5 2.5 0 0 0 3 12.5V19h5v-6H5.5" />
+          <path d="M18 10h-2.5A2.5 2.5 0 0 0 13 12.5V19h5v-6h-2.5" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -264,9 +336,13 @@ function App() {
   const [draftPhotoSettings, setDraftPhotoSettings] = useState<PhotoSettings>(getDefaultPhotoSettings(getViewportOrientation()));
   const [generatedImage, setGeneratedImage] = useState('');
   const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [activeHistoryRecord, setActiveHistoryRecord] = useState<HistoryRecord | null>(null);
+  const [historyImageView, setHistoryImageView] = useState<HistoryImageView>('final');
+  const [showHistoryPrompt, setShowHistoryPrompt] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isRewritingPrompt, setIsRewritingPrompt] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [isCameraLive, setIsCameraLive] = useState(false);
   const [keyDialogError, setKeyDialogError] = useState('');
 
@@ -480,6 +556,9 @@ function App() {
     activeSourceIdRef.current = '';
     setScreen('camera');
     setOverlay(null);
+    setActiveHistoryRecord(null);
+    setHistoryImageView('final');
+    setShowHistoryPrompt(false);
     setSourceImage('');
     setSourceWidth(0);
     setSourceHeight(0);
@@ -569,18 +648,10 @@ function App() {
   }
 
   function openHistoryRecord(record: HistoryRecord) {
-    activeSourceIdRef.current = record.sourceId;
-    setSourceId(record.sourceId);
-    setSourceImage(record.sourceImageDataUrl);
-    setGeneratedImage(record.generatedImageDataUrl);
-    setPromptText(record.promptText);
-    setPromptEditorValue(record.promptText);
-    setPhotoSettings(record.photoSettings);
-    setDraftPhotoSettings(record.photoSettings);
-    setSourceOrientation(record.orientation);
-    setSourceWidth(record.sourceWidth);
-    setSourceHeight(record.sourceHeight);
-    setScreen('generated');
+    setActiveHistoryRecord(record);
+    setHistoryImageView('final');
+    setShowHistoryPrompt(false);
+    setScreen('historyDetail');
     setOverlay(null);
   }
 
@@ -589,7 +660,115 @@ function App() {
       return;
     }
 
-    await shareImageDataUrl(dataUrl, `${filePrefix}-${Date.now()}.webp`);
+    const extension = getDataUrlExtension(dataUrl);
+    await shareImageDataUrl(dataUrl, `${filePrefix}-${Date.now()}.${extension}`);
+  }
+
+  async function clearMemory() {
+    if (!window.confirm('Delete all saved images and prompts from this device?')) {
+      return;
+    }
+
+    try {
+      await clearHistoryRecords();
+      setHistory([]);
+      setActiveHistoryRecord(null);
+      setHistoryImageView('final');
+      setShowHistoryPrompt(false);
+      setSourceImage('');
+      setGeneratedImage('');
+      setPromptText('');
+      setPromptEditorValue('');
+      setSourceWidth(0);
+      setSourceHeight(0);
+      setStatusMessage('All saved images and prompts were removed from this device.');
+
+      if (screen === 'history' || screen === 'historyDetail') {
+        setScreen('settings');
+      }
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : 'Could not clear saved history.');
+    }
+  }
+
+  async function exportAllHistory() {
+    if (history.length === 0) {
+      setStatusMessage('There is no saved history to export.');
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const zip = new JSZip();
+      const orderedRecords = [...history].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+
+      orderedRecords.forEach((record, index) => {
+        const exportIndex = String(index + 1).padStart(4, '0');
+        const originalExtension = getDataUrlExtension(record.sourceImageDataUrl);
+        const finalExtension = getDataUrlExtension(record.generatedImageDataUrl);
+
+        zip.file(`img_${exportIndex}_original.${originalExtension}`, dataUrlToBlob(record.sourceImageDataUrl));
+        zip.file(`img_${exportIndex}_final.${finalExtension}`, dataUrlToBlob(record.generatedImageDataUrl));
+        zip.file(`img_${exportIndex}_prompt.txt`, record.promptText);
+      });
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      await shareBlobFile(zipBlob, `promptograph-export-${Date.now()}.zip`);
+      setStatusMessage('History export is ready.');
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : 'Could not export saved history.');
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
+  function renderHistoryDetailScreen() {
+    if (!activeHistoryRecord) {
+      return renderHistoryScreen();
+    }
+
+    const selectedHistoryImage =
+      historyImageView === 'original' ? activeHistoryRecord.sourceImageDataUrl : activeHistoryRecord.generatedImageDataUrl;
+    const selectedPrefix = historyImageView === 'original' ? 'promptograph-original' : 'promptograph-final';
+    const selectedLabel = historyImageView === 'original' ? 'original' : 'final';
+    const selectedExtension = getDataUrlExtension(selectedHistoryImage);
+
+    return (
+      <section className="screen screen-generated">
+        <img className="fullscreen-image" src={selectedHistoryImage} alt={`${selectedLabel} history image`} />
+        <div className="screen-scrim screen-scrim-image" />
+        <div className="screen-top floating-actions">
+          <IconButton icon="share" label={`Share ${selectedLabel} image`} onClick={() => void shareCurrentImage(selectedHistoryImage, selectedPrefix)} />
+          <IconButton
+            icon="download"
+            label={`Download ${selectedLabel} image`}
+            onClick={() => downloadDataUrl(selectedHistoryImage, `${selectedPrefix}-${Date.now()}.${selectedExtension}`)}
+          />
+        </div>
+        {showHistoryPrompt ? <div className="prompt-panel">{activeHistoryRecord.promptText}</div> : null}
+        <div className="screen-bottom action-cluster">
+          <IconButton icon="back" label="Back to history list" onClick={() => setScreen('history')} />
+          <IconButton
+            icon="image"
+            label="Show original image"
+            onClick={() => setHistoryImageView('original')}
+            variant={historyImageView === 'original' ? 'accent' : 'glass'}
+          />
+          <IconButton
+            icon="spark"
+            label="Show generated image"
+            onClick={() => setHistoryImageView('final')}
+            variant={historyImageView === 'final' ? 'accent' : 'glass'}
+          />
+          <IconButton
+            icon="quote"
+            label={showHistoryPrompt ? 'Hide prompt' : 'Show prompt'}
+            onClick={() => setShowHistoryPrompt((current) => !current)}
+            variant={showHistoryPrompt ? 'accent' : 'glass'}
+          />
+        </div>
+      </section>
+    );
   }
 
   function renderCameraScreen() {
@@ -727,7 +906,15 @@ function App() {
           </label>
           <div className="floating-actions left-aligned">
             <IconButton icon="save" label="Save API key" onClick={saveApiKey} variant="accent" />
-            <IconButton icon="trash" label="Forget API key" onClick={forgetApiKey} variant="danger" />
+            <IconButton icon="key" label="Forget API key" onClick={forgetApiKey} variant="danger" />
+            <IconButton icon="trash" label="Clear saved history" onClick={() => void clearMemory()} variant="danger" />
+            <IconButton
+              icon="archive"
+              label="Export all saved history"
+              onClick={() => void exportAllHistory()}
+              variant="glass"
+              disabled={isExporting || history.length === 0}
+            />
           </div>
         </div>
       </section>
@@ -742,6 +929,7 @@ function App() {
       {screen === 'review' ? renderReviewScreen() : null}
       {screen === 'generated' ? renderGeneratedScreen() : null}
       {screen === 'history' ? renderHistoryScreen() : null}
+      {screen === 'historyDetail' ? renderHistoryDetailScreen() : null}
       {screen === 'settings' ? renderSettingsScreen() : null}
 
       {overlay === 'apiKey' ? (

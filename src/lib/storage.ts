@@ -76,3 +76,11 @@ export async function saveHistoryRecord(record: HistoryRecord): Promise<void> {
     request.onsuccess = () => resolve();
   });
 }
+
+export async function clearHistoryRecords(): Promise<void> {
+  await runTransaction<void>('readwrite', (store, resolve, reject) => {
+    const request = store.clear();
+    request.onerror = () => reject(request.error ?? new Error('Could not clear history records.'));
+    request.onsuccess = () => resolve();
+  });
+}
